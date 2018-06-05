@@ -1,0 +1,470 @@
+---
+title: "Tutorial Text Mining"
+output: html_notebook
+---
+
+# Terminologia 
+
+- *Token*: uma unidade do texto, pode ser uma palavra, uma frase, etc. 
+- *Documento*: uma sequencia de tokens, por exemplo um livro ou um artigo 
+- *Corpus*: um conjunto de documentos. 
+- *Document Term Matrix*: uma matrix que descreve a frequencia de termos em um corpus
+- *Stopwords*: palavras que não contém informação, que ocorrem com muita frequência.
+
+
+# Instalação dos Pacotes
+
+```{r,results='hide'}
+###### Pacotes  ######
+#install.packages(c('topicmodels','stringr','tidytext','tidyverse','scales','pdftools','tm'))
+library(topicmodels) 
+library(stringr) 
+library(tidytext) 
+library(tidyverse) 
+library(scales) 
+library(pdftools)
+library(tm)
+library(stopwords)
+```
+
+# Download dos textos
+
+O MEC tem livros disponíveis para download em seu site. http://machado.mec.gov.br/obra-completa-lista/itemlist/category/23-romance
+
+Vamos baixar 3 livros do Machado de Assis para fazer a análise.
+
+- Dom Casmurro.
+- Memórias Postumas de Brás Cubas.
+- Quincas Borbas
+
+```{r}
+
+download.file('http://machado.mec.gov.br/obra-completa-lista/item/download/13_7101e1a36cda79f6c97341757dcc4d04',dest='dom_casmurro.pdf',mode = 'wb')
+
+download.file('http://machado.mec.gov.br/obra-completa-lista/item/download/16_ff646a924421ea897f27cf6d21e6bb23',dest='bras_cubas.pdf',mode='wb')
+
+download.file('http://machado.mec.gov.br/obra-completa-lista/item/download/14_7bbc6c42393beeac1fd963c16d935f40',dest='borba.pdf',mode='wb')
+```
+
+# Importção dos livros para o R
+
+```{r}
+dom_casmurro<-pdf_text('dom_casmurro.pdf')
+bras_cubas<-pdf_text('bras_cubas.pdf')
+borba<-pdf_text('borba.pdf')
+```
+
+Podemos ver quantas páginas tem os livros e acessa-las:
+
+```{r}
+length(dom_casmurro)
+dom_casmurro[3]
+```
+
+# Manipulação
+
+Para conseguir trabalhar vamos colocalos em um data frame. Cada linha vai ser uma página de um livro.
+
+```{r}
+
+livros=c(rep('Dom_Casmurro',length(dom_casmurro)),
+         rep('Bras_Cubas',length(bras_cubas)),
+         rep('Quincas_Borbas',length(borba))
+         )
+livros_df <- data.frame(livro=livros,texto=c(dom_casmurro,
+                                             bras_cubas,
+                                             borba),stringsAsFactors = F)
+
+livros_df %>%
+  mutate(livro,samp_texto=substr(texto,1,15))%>% ## Apenas para conseguir imprimir o data frame
+  select(livro,samp_texto) %>%
+  head()
+```
+
+
+# Tokens
+
+Precisamos tokenizar os textos. Um token é uma unidade do texto, pode ser uma palavra ou uma frase por exemplo. Aqui vamos tokenizar em palavras, então cada linha do data frame vai ter uma palavra.
+
+```{r}
+token_df<-livros_df %>%
+  unnest_tokens(palavra,texto)
+
+head(token_df)
+```
+
+Agora vamos criar uma coluna para idenficar onde começam os capítulos, e associar cada palavra a um dos capítulos. Para isso vamos criar uma nova variável que incrementa em uma unidade a cada vez  identifica as linhas onde a palavra "capítulo" aparece.
+
+```{r}
+token_df <- token_df %>%
+            group_by(livro) %>%
+              mutate(linenumber = row_number(),
+                     capitulo = cumsum(str_detect(palavra, regex("^capítulo",
+                                                             ignore_case = TRUE)))) %>%
+              ungroup()
+token_df$capitulo_livro<- paste(token_df$livro,token_df$capitulo,sep='#')
+
+head(token_df)
+```
+
+```{r}
+token_df[25:35,]
+```
+
+Agora podemos filtrar tudo que aparece antes do último capítulo:
+
+```{r}
+token_df <- token_df %>%
+              filter(capitulo!=0)
+
+head(token_df)
+```
+
+# Limpeza
+
+Vamos tirar as palavras muito comuns que adicionam pouca informação ao texto, por exemplo "um","de","a". Essas palavras são chamadas de *stopwords*.
+O pacote `stopwords` contém uma lista desas palavras em vários idiomas, incluindo portugês.
+
+```{r}
+stopwords(language = "pt")
+```
+
+Vamos salvar essa lista em um objeto e retira-las dos nosso data frame dos livros. 
+
+```{r}
+stop_port <- stopwords(language = "pt")
+
+token_df <- token_df %>%
+  filter(!palavra %in% stop_port)
+
+head(token_df,n=20)
+
+```
+
+Podemos ver que temos palavras pouco informativas na base. Podemos incrementar a lista original com nossas palavras:
+
+```{r}
+stop_port <- c(stopwords(language = "pt"),'capítulo','desta','destas','deste','destes')
+
+token_df <- token_df %>%
+  filter(!palavra %in% stop_port)
+
+head(token_df)
+
+```
+
+Vamos ver se ainda sobraram alguma dessas palavras:
+
+```{r}
+head(token_df %>%
+      count(palavra,sort=T),30) 
+
+stop_port <- c(stopwords(language = "pt"),'capítulo','desta','destas','deste','destes','é','ainda','ser','ia',
+                                            'vez','lo','ia','tão','agora','assim',
+                                          'então','a','à','disse','la','d','tudo','nada','outro','outros',
+                                          'outra','outra','bem','bom','algum','algumas','coisa','ir','fez')
+
+
+token_df <- token_df %>%
+  filter(!palavra %in% stop_port)
+
+head(token_df %>%
+       count(palavra,sort=T),10) 
+```
+
+Agora vamos retirar os acentos das palavras.
+
+```{r}
+token_df$palavra <- iconv(token_df$palavra,from='UTF-8',to="ASCII//TRANSLIT") # remove acentuação
+```
+
+Finalmente vamos retirar tudo que não é uma  palavra:
+
+```{r}
+token_df <- token_df %>%
+              filter(grepl('^[a-z]',palavra))
+```
+
+## Comparando os livros
+
+
+
+```{r}
+
+frequncia <- token_df %>%
+                count(livro,palavra) %>%
+                group_by(livro) %>%
+                mutate(proporcao=n/sum(n)) %>%
+                select(-n) %>%
+                spread(livro,proporcao,fill=0) %>%
+                gather(livro,proporcao,Dom_Casmurro:Quincas_Borbas)
+head(frequncia)
+
+```
+
+```{r}
+
+ggplot(frequncia, aes(x = proporcao, y = `Bras_Cubas`, color = abs(`Bras_Cubas` - proporcao))) +
+  geom_abline(color = "gray40", lty = 2) +
+  geom_jitter(alpha = 0.1, size = 2.5, width = 0.3, height = 0.3) +
+  geom_text(aes(label = palavra), check_overlap = TRUE, vjust = -1.5) +
+  scale_x_log10(labels = percent_format()) +
+  scale_y_log10(labels = percent_format()) +
+  scale_color_gradient(limits = c(0, 0.001), low = "darkslategray4", high = "gray75") +
+  facet_wrap(~livro, ncol = 2) +
+  theme(legend.position="none") +
+  labs(y = "Bras Cubas", x = NULL)
+
+```
+
+# Document Term Matrix
+
+Document term matrix é uma estrutura muito utilizada em text mining. 
+
+A matrix é montada da seguinte forma: 
+
+- Cada linha representa um documento.
+- Nas colunas temos os termos (palavras).
+- a matrix é preenchida com valores que representam quantas vezes um dado termo aparece no documento.
+
+Vamos colocar nosso data frame dos livros nesse formato.
+
+Nesse caso vamos utilizar os capítulos de cada livro para representar os documentos.
+
+
+```{r,message=F, warning=F,results='hide'}
+
+machado_dtm <- token_df %>%
+                    count(capitulo_livro,palavra,sort=TRUE) %>%
+                    ungroup() %>%
+                    cast_dtm(capitulo_livro,palavra,n)
+
+```
+
+Vamos ver, o que esse object contém.
+
+```{r}
+machado_dtm
+```
+
+```{r}
+inspect(machado_dtm)
+```
+
+# Topic Modeling
+
+Topic modeling é uma forma de agrupar os documentos em tópicos similares. 
+
+Um modelo muito comum utilizado para fazer esse agrupamento é o *Latent Dirichelet Allocation* (LDA).
+O artigo orinal pode ser encontrado aqui: http://www.jmlr.org/papers/volume3/blei03a/blei03a.pdf.
+
+De forma resumida:
+
+O modelo assume que os documentos são formados por uma mistura de tópicos. Cada tópico tem uma distribuição de palavras, é possível que um mesma palavra pertença a mais de um tópico.
+
+![Ilustração LDA](Modeling1.png)
+
+### Exemplo 
+
+Vamos ver um exemplo com 2 tópicos
+
+```{r}
+
+ap_lda <- LDA(machado_dtm, k = 2, control = list(seed = 1234))
+str(ap_lda)
+
+```
+
+
+```{r}
+ap_topics <- tidy(ap_lda, matrix = "beta")
+ap_topics
+
+```
+
+
+```{r}
+ap_top_terms <- ap_topics %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+ap_top_terms %>%
+  mutate(term = reorder(term, beta)) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip()
+```
+
+### Exemplo 2
+
+Relembrando: 
+
+Cada capítulo representa um documentos, será que o LDA consegue idenficar quais capítulos pertencem ao mesmo livro?
+
+
+```{r}
+ap_lda <- LDA(machado_dtm, k = 3, control = list(seed = 1234))
+
+ap_topics <- tidy(ap_lda, matrix = "beta")
+
+ap_top_terms <- ap_topics %>%
+  group_by(topic) %>%
+  top_n(10, beta) %>%
+  ungroup() %>%
+  arrange(topic, -beta)
+
+ap_top_terms %>%
+  mutate(term = reorder(term, beta)) %>%
+  ggplot(aes(term, beta, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  coord_flip()
+
+```
+
+
+```{r}
+
+capitulos_gamma <- tidy(ap_lda, matrix = "gamma")
+capitulos_gamma
+
+
+```
+
+
+```{r}
+capitulos_gamma <- capitulos_gamma %>%
+  separate(document, c("title", "chapter"), sep = "#", convert = TRUE)
+
+capitulos_gamma
+```
+
+```{r}
+capitulos_gamma %>%
+  mutate(title = reorder(title, gamma * topic)) %>%
+  ggplot(aes(factor(topic), gamma)) +
+  geom_boxplot() +
+  facet_wrap(~ title)
+```
+
+
+## Previsão
+
+Podemos agora usar nosso modelo para classificar textos em seus respectivos assuntos.
+Para isso precisamos colocar no formato de *document term matrix*. 
+
+```{r}
+dom_casmurro[[4]]
+```
+
+
+```{r}
+texto_teste <- dom_casmurro[[4]]
+corpus_teste<-Corpus(VectorSource(texto_teste))
+teste_dtm<-DocumentTermMatrix(corpus_teste, control = list
+               (dictionary=Terms(machado_dtm), wordLengths = c(3,10)) )
+
+
+```
+
+o pacote `topicmodels` tem uma função que ajuda com a classificação; 
+
+```{r}
+teste_topic<-posterior(ap_lda,teste_dtm)
+str(teste_topic)
+
+```
+
+Vamos dar uma olhado no elemento *topics*
+```{r}
+teste_topic$topics
+```
+
+Vemos que essa função atribui uma probabilidade do novo texto pertencer a cada um dos tópicos, vamos retirar o tópico mais provável.
+
+```{r}
+apply(teste_topic$topics, 1, which.max)
+```
+
+Vamos criar uma função para facilitar todo o trabalho de colocar no formato correto, prever as probabilidades de cada tópico e retirar o tóprico mais provável:
+
+```{r}
+prev_func<-function(x){
+  texto_teste <- x
+corpus_teste<-Corpus(VectorSource(texto_teste))
+teste_dtm<-DocumentTermMatrix(corpus_teste, control = list
+               (dictionary=Terms(machado_dtm), wordLengths = c(3,10)) )
+  
+teste_topic<-posterior(ap_lda,teste_dtm)
+
+return(apply(teste_topic$topics, 1, which.max))
+
+
+}
+```
+
+resultado:
+
+```{r}
+
+prev_func(dom_casmurro[[3]])
+```
+
+
+```{r}
+prev_dom<-lapply(dom_casmurro,prev_func)
+```
+
+
+```{r}
+unlist(prev_dom)
+```
+
+Quantas vezes a previsção acertou:
+```{r}
+sum(unlist(prev_dom)==3)
+```
+
+
+```{r}
+sum(unlist(prev_dom)==3)/length(dom_casmurro)
+```
+
+
+
+# Refências 
+
+- https://www.tidytextmining.com/
+
+- http://www.jmlr.org/papers/volume3/blei03a/blei03a.pdf
+
+- https://cran.r-project.org/web/packages/tm/vignettes/tm.pdf
+
+
+# Estágio Globo.com
+
+Contato: carla.lopes@eureca.me
+
+**Estágio de 6h**
+
+- Bolsa-auxílio RJ: R$ 1370,00
+- Vale-refeição: R$ 31,00/dia
+- Auxílio-transporte:  R$ 175,00
+- Seguro de vida
+- Seguro de acidentes pessoais
+- Recesso: 15 dias em julho e 15 dias em dezembro
+
+
+**Estágio de 4h**
+
+- Bolsa-auxílio RJ: R$ 909,68
+- Vale-refeição: R$ 31,00/dia
+- Auxílio-transporte:  R$ 175,00
+- Seguro de vida
+- Seguro de acidentes pessoais
+- Recesso: 15 dias em julho e 15 dias em dezembro
+
+
